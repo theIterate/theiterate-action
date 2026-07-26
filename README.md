@@ -55,3 +55,9 @@ jobs:
 Requires `curl` and `jq` (present on GitHub's `ubuntu-latest`). The eval spends
 LLM tokens against your plan budget, so it's rate-limited and admin-gated
 (`ci_enabled`) on the theiterate side.
+
+## Support
+
+Questions, billing, and product bugs →
+[GitHub Discussions](https://github.com/orgs/theIterate/discussions)
+(our only contact channel). Fixes for this Action → open a PR here.
