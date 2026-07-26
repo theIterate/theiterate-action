@@ -1,0 +1,78 @@
+name: "theiterate — CI for prompts"
+description: "Run a prompt's test set and fail the build if it regresses vs. the live version."
+branding:
+  icon: "target"
+  color: "gray-dark"
+
+inputs:
+  api-key:
+    description: "Workspace API key (ti_live_…). Store it as a repo secret."
+    required: true
+  prompt:
+    description: "The prompt name in theiterate."
+    required: true
+  base-url:
+    description: "theiterate base URL."
+    required: false
+    default: "https://theiterate.com"
+  body-file:
+    description: "Optional path to a prompt file to evaluate as the candidate. If omitted, the latest stored version is evaluated."
+    required: false
+    default: ""
+  min-pass-rate:
+    description: "Optional absolute floor (0..1). Fail if the candidate's pass rate is below this, regardless of baseline."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - shell: bash
+      env:
+        TI_API_KEY: ${{ inputs.api-key }}
+        TI_PROMPT: ${{ inputs.prompt }}
+        TI_BASE_URL: ${{ inputs.base-url }}
+        TI_BODY_FILE: ${{ inputs.body-file }}
+        TI_MIN_PASS_RATE: ${{ inputs.min-pass-rate }}
+      run: |
+        set -euo pipefail
+
+        body=""
+        if [ -n "${TI_BODY_FILE}" ]; then
+          body="$(cat "${TI_BODY_FILE}")"
+        fi
+        minp="${TI_MIN_PASS_RATE:-}"
+        [ -z "$minp" ] && minp="null"
+
+        payload="$(jq -n --arg body "$body" --argjson minp "$minp" \
+          '{}
+           + (if $body != "" then {body:$body} else {} end)
+           + (if $minp != null then {minPassRate:$minp} else {} end)')"
+
+        resp="$(curl -sS -X POST \
+          "${TI_BASE_URL}/v1/prompts/${TI_PROMPT}/ci" \
+          -H "Authorization: Bearer ${TI_API_KEY}" \
+          -H "Content-Type: application/json" \
+          -d "$payload")"
+
+        echo "$resp" | jq . || { echo "::error::theiterate returned a non-JSON response"; echo "$resp"; exit 1; }
+
+        verdict="$(echo "$resp" | jq -r '.verdict // "error"')"
+
+        # Job summary (best-effort; never fail on formatting).
+        {
+          echo "### theiterate — CI for prompts"
+          echo "$resp" | jq -r '
+            "- prompt: **\(.prompt)**",
+            "- verdict: **\(.verdict)**",
+            "- candidate: v\(.candidate.version) — \(.candidate.passed)/\(.candidate.total) passed" + (if .candidate.passRate != null then " (\((.candidate.passRate*100)|round)%)" else "" end),
+            (if .baseline != null then "- baseline: v\(.baseline.version) — \((.baseline.passRate*100)|round)%" else "- baseline: none (nothing to regress against)" end),
+            "- est. cost: $\(.candidate.costUsd)"
+          '
+        } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+        if [ "$verdict" != "pass" ]; then
+          echo "::error::theiterate: prompt '${TI_PROMPT}' did not pass (verdict=${verdict})."
+          exit 1
+        fi
+        echo "theiterate: '${TI_PROMPT}' passed ✓"
